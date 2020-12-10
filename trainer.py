@@ -1,6 +1,5 @@
 import argparse
 import os
-import shutil
 import time
 
 import torch
@@ -8,12 +7,10 @@ import torch.nn as nn
 import torch.nn.parallel
 import torch.backends.cudnn as cudnn
 import torch.optim
-import torch.utils.data
-import torchvision.transforms as transforms
-import torchvision.datasets as datasets
 from torch.utils.tensorboard import SummaryWriter
 
 import resnet
+import cifar
 
 model_names = sorted(name for name in resnet.__dict__
     if name.islower() and not name.startswith("__")
@@ -79,30 +76,18 @@ def main():
 
     cudnn.benchmark = True
 
-    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                     std=[0.229, 0.224, 0.225])
+    dataset = cifar.CIFAR10('~/datasets', pin_memory=True)
 
-    train_loader = torch.utils.data.DataLoader(
-        datasets.CIFAR10(root='~/datasets', train=True, transform=transforms.Compose([
-            transforms.RandomHorizontalFlip(),
-            transforms.RandomCrop(32, 4),
-            transforms.ToTensor(),
-            normalize,
-        ]), download=True),
-        batch_size=args.batch_size, shuffle=True,
-        num_workers=args.workers, pin_memory=True)
+    train_loader = dataset.get_train_loader(args.batch_size, shuffle=True,
+                                            num_workers=args.workers)
 
-    val_loader = torch.utils.data.DataLoader(
-        datasets.CIFAR10(root='~/datasets', train=False, transform=transforms.Compose([
-            transforms.ToTensor(),
-            normalize,
-        ])),
-        batch_size=128, shuffle=False,
-        num_workers=args.workers, pin_memory=True)
+    val_loader = dataset.get_test_loader(128, num_workers=args.workers)
 
-    sample_imgs, sample_labels = next(iter(val_loader))
-    writer.add_images("Sample images", sample_imgs)
-    writer.add_graph(model.module, sample_imgs.cuda())
+    model.eval()
+    with torch.no_grad():
+        sample_imgs, sample_labels = next(iter(val_loader))
+        writer.add_graph(model.module, sample_imgs.cuda())
+    model.train()
 
     # define loss function (criterion) and optimizer
     criterion = nn.CrossEntropyLoss().cuda()
@@ -119,11 +104,11 @@ def main():
                                                         milestones=[100, 150], last_epoch=args.start_epoch - 1)
 
     if args.arch in ['resnet1202', 'resnet110']:
-        # for resnet1202 original paper uses lr=0.01 for first 400 minibatches for warm-up
-        # then switch back. In this setup it will correspond for first epoch.
+        # for resnet1202 original paper uses lr=0.01 for first 400 minibatches
+        # for warm-up then switch back.
+        # In this setup it will correspond for first epoch.
         for param_group in optimizer.param_groups:
             param_group['lr'] = args.lr*0.1
-
 
     if args.evaluate:
         validate(val_loader, model, criterion)
@@ -140,7 +125,6 @@ def main():
         prec1 = validate(val_loader, model, criterion, epoch, writer)
 
         # remember best prec@1 and save checkpoint
-        is_best = prec1 > best_prec1
         best_prec1 = max(prec1, best_prec1)
 
     writer.flush()
@@ -201,7 +185,11 @@ def train(train_loader, model, criterion, optimizer, epoch, writer):
                       data_time=data_time, loss=losses, top1=top1))
             writer.add_scalar("Top-1 accuracy", top1.avg, epoch*len(train_loader)+i)
 
-    print(f"Train: [{epoch}]\t\tTime {batch_time.avg:.3f}\t(DL {data_time.avg:.3f})\tLoss {losses.avg:.4f}\t\tPrec@1 {top1.avg:.3f}")
+    print(f"Train: [{epoch}]\t\t"
+          "Time {batch_time.avg:.3f}\t"
+          "(DL {data_time.avg:.3f})\t"
+          "Loss {losses.avg:.4f}\t\t"
+          "Prec@1 {top1.avg:.3f}")
 
 
 def validate(val_loader, model, criterion, epoch, writer):
@@ -241,16 +229,10 @@ def validate(val_loader, model, criterion, epoch, writer):
             end = time.time()
         writer.add_scalar("Top-1 test accuracy", top1.avg, epoch*len(val_loader))
 
-
     print(f"Valid: Prec@1 {top1.avg:.3f} \t (Time: {batch_time.avg:.3f}, Loss: {losses.avg:.4f})")
 
     return top1.avg
 
-def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
-    """
-    Save the training model
-    """
-    torch.save(state, filename)
 
 class AverageMeter(object):
     """Computes and stores the average and current value"""
