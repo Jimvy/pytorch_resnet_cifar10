@@ -26,7 +26,16 @@ Reference:
 
 If you use this implementation in you work, please don't forget to mention the
 author, Yerlan Idelbayev.
+
+@misc{Idelbayev18a,
+    author       = "Yerlan Idelbayev",
+    title        = "Proper {ResNet} Implementation for {CIFAR10/CIFAR100} in {PyTorch}",
+    howpublished = "\\url{https://github.com/akamaster/pytorch_resnet_cifar10}",
+    note         = "Accessed: 20xx-xx-xx"
+}
 '''
+
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -36,11 +45,13 @@ from torch.autograd import Variable
 
 __all__ = ['ResNet', 'resnet20', 'resnet32', 'resnet44', 'resnet56', 'resnet110', 'resnet1202']
 
+
 def _weights_init(m):
     classname = m.__class__.__name__
     #print(classname)
     if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d):
         init.kaiming_normal_(m.weight)
+
 
 class LambdaLayer(nn.Module):
     def __init__(self, lambd):
@@ -84,16 +95,16 @@ class BasicBlock(nn.Module):
 
 
 class ResNet(nn.Module):
-    def __init__(self, block, num_blocks, num_classes=10):
+    def __init__(self, block, num_blocks, num_classes=10, base_width=16):
         super(ResNet, self).__init__()
-        self.in_planes = 16
+        self.in_planes = base_width
 
-        self.conv1 = nn.Conv2d(3, 16, kernel_size=3, stride=1, padding=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(16)
-        self.layer1 = self._make_layer(block, 16, num_blocks[0], stride=1)
-        self.layer2 = self._make_layer(block, 32, num_blocks[1], stride=2)
-        self.layer3 = self._make_layer(block, 64, num_blocks[2], stride=2)
-        self.linear = nn.Linear(64, num_classes)
+        self.conv1 = nn.Conv2d(3, self.in_planes, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(self.in_planes)
+        self.layer1 = self._make_layer(block, base_width*1, num_blocks[0], stride=1)
+        self.layer2 = self._make_layer(block, base_width*2, num_blocks[1], stride=2)
+        self.layer3 = self._make_layer(block, base_width*4, num_blocks[2], stride=2)
+        self.linear = nn.Linear(base_width*4, num_classes)
 
         self.apply(_weights_init)
 
@@ -117,28 +128,34 @@ class ResNet(nn.Module):
         return out
 
 
-def resnet20():
-    return ResNet(BasicBlock, [3, 3, 3])
+def resnet20(**kwargs):
+    r"""Should reach 91.73% accuracy, 0.27M params"""
+    return ResNet(BasicBlock, [3, 3, 3], **kwargs)
 
 
-def resnet32():
-    return ResNet(BasicBlock, [5, 5, 5])
+def resnet32(**kwargs):
+    r"""Should reach 92.63% accuracy, 0.46M params"""
+    return ResNet(BasicBlock, [5, 5, 5], **kwargs)
 
 
-def resnet44():
-    return ResNet(BasicBlock, [7, 7, 7])
+def resnet44(**kwargs):
+    r"""Should reach 93.10% accuracy, 0.66M params"""
+    return ResNet(BasicBlock, [7, 7, 7], **kwargs)
 
 
-def resnet56():
-    return ResNet(BasicBlock, [9, 9, 9])
+def resnet56(**kwargs):
+    r"""Should reach 93.39% accuracy, 0.85M params"""
+    return ResNet(BasicBlock, [9, 9, 9], **kwargs)
 
 
-def resnet110():
-    return ResNet(BasicBlock, [18, 18, 18])
+def resnet110(**kwargs):
+    r"""Should reach 93.68% accuracy, 1.7M params"""
+    return ResNet(BasicBlock, [18, 18, 18], **kwargs)
 
 
-def resnet1202():
-    return ResNet(BasicBlock, [200, 200, 200])
+def resnet1202(**kwargs):
+    r"""Should reach 93.82% accuracy, 19.4M params"""
+    return ResNet(BasicBlock, [200, 200, 200], **kwargs)
 
 
 def test(net):

@@ -1,5 +1,4 @@
 import argparse
-import os
 import time
 
 import torch
@@ -13,17 +12,17 @@ import resnet
 import cifar
 
 model_names = sorted(name for name in resnet.__dict__
-    if name.islower() and not name.startswith("__")
+                     if name.islower() and not name.startswith("__")
                      and name.startswith("resnet")
                      and callable(resnet.__dict__[name]))
-
-print(model_names)
 
 parser = argparse.ArgumentParser(description='Propert ResNets for CIFAR10 in pytorch')
 parser.add_argument('--arch', '-a', metavar='ARCH', default='resnet32',
                     choices=model_names,
                     help='model architecture: ' + ' | '.join(model_names) +
                     ' (default: resnet32)')
+parser.add_argument('--base_width', metavar='WIDTH', default=16, type=int,
+                    help='width of the base layer')
 parser.add_argument('-j', '--workers', default=4, type=int, metavar='N',
                     help='number of data loading workers (default: 4)')
 parser.add_argument('--epochs', default=200, type=int, metavar='N',
@@ -40,12 +39,8 @@ parser.add_argument('--weight-decay', '--wd', default=1e-4, type=float,
                     metavar='W', help='weight decay (default: 1e-4)')
 parser.add_argument('--print-freq', '-p', default=50, type=int,
                     metavar='N', help='print frequency (default: 50)')
-parser.add_argument('--resume', default='', type=str, metavar='PATH',
-                    help='path to latest checkpoint (default: none)')
 parser.add_argument('-e', '--evaluate', dest='evaluate', action='store_true',
                     help='evaluate model on validation set')
-parser.add_argument('--pretrained', dest='pretrained', action='store_true',
-                    help='use pre-trained model')
 parser.add_argument('--half', dest='half', action='store_true',
                     help='use half-precision(16-bit) ')
 best_prec1 = 0
@@ -55,24 +50,7 @@ def main():
     global args, best_prec1
     args = parser.parse_args()
 
-    model = torch.nn.DataParallel(resnet.__dict__[args.arch]())
-    model.cuda()
-    print(model)
-
     writer = SummaryWriter()
-
-    # optionally resume from a checkpoint
-    if args.resume:
-        if os.path.isfile(args.resume):
-            print("=> loading checkpoint '{}'".format(args.resume))
-            checkpoint = torch.load(args.resume)
-            args.start_epoch = checkpoint['epoch']
-            best_prec1 = checkpoint['best_prec1']
-            model.load_state_dict(checkpoint['state_dict'])
-            print("=> loaded checkpoint '{}' (epoch {})"
-                  .format(args.evaluate, checkpoint['epoch']))
-        else:
-            print("=> no checkpoint found at '{}'".format(args.resume))
 
     cudnn.benchmark = True
 
@@ -82,6 +60,13 @@ def main():
                                             num_workers=args.workers)
 
     val_loader = dataset.get_test_loader(128, num_workers=args.workers)
+
+    model = torch.nn.DataParallel(resnet.__dict__[args.arch](
+        num_classes=dataset.get_num_classes(),
+        base_width=args.base_width
+    ))
+    model.cuda()
+    print(model)
 
     model.eval()
     with torch.no_grad():
@@ -127,6 +112,7 @@ def main():
         # remember best prec@1 and save checkpoint
         best_prec1 = max(prec1, best_prec1)
 
+    # TODO: add precision-recall curve
     writer.flush()
     writer.close()
 
