@@ -11,6 +11,8 @@ import torch.optim
 import torch.utils.data
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
+from torch.utils.tensorboard import SummaryWriter
+
 import resnet
 
 model_names = sorted(name for name in resnet.__dict__
@@ -60,6 +62,8 @@ def main():
     model.cuda()
     print(model)
 
+    writer = SummaryWriter()
+
     # optionally resume from a checkpoint
     if args.resume:
         if os.path.isfile(args.resume):
@@ -96,6 +100,10 @@ def main():
         batch_size=128, shuffle=False,
         num_workers=args.workers, pin_memory=True)
 
+    sample_imgs, sample_labels = next(iter(val_loader))
+    writer.add_images("Sample images", sample_imgs)
+    writer.add_graph(model.module, sample_imgs.cuda())
+
     # define loss function (criterion) and optimizer
     criterion = nn.CrossEntropyLoss().cuda()
 
@@ -125,18 +133,21 @@ def main():
 
         # train for one epoch
         print('current lr {:.5e}'.format(optimizer.param_groups[0]['lr']))
-        train(train_loader, model, criterion, optimizer, epoch)
+        train(train_loader, model, criterion, optimizer, epoch, writer)
         lr_scheduler.step()
 
         # evaluate on validation set
-        prec1 = validate(val_loader, model, criterion)
+        prec1 = validate(val_loader, model, criterion, epoch, writer)
 
         # remember best prec@1 and save checkpoint
         is_best = prec1 > best_prec1
         best_prec1 = max(prec1, best_prec1)
 
+    writer.flush()
+    writer.close()
 
-def train(train_loader, model, criterion, optimizer, epoch):
+
+def train(train_loader, model, criterion, optimizer, epoch, writer):
     """
         Run one train epoch
     """
@@ -188,11 +199,12 @@ def train(train_loader, model, criterion, optimizer, epoch):
                   'Prec@1 {top1.val:.3f} ({top1.avg:.3f})'.format(
                       epoch, i, len(train_loader), batch_time=batch_time,
                       data_time=data_time, loss=losses, top1=top1))
+            writer.add_scalar("Top-1 accuracy", top1.avg, epoch*len(train_loader)+i)
 
     print(f"Train: [{epoch}]\t\tTime {batch_time.avg:.3f}\t(DL {data_time.avg:.3f})\tLoss {losses.avg:.4f}\t\tPrec@1 {top1.avg:.3f}")
 
 
-def validate(val_loader, model, criterion):
+def validate(val_loader, model, criterion, epoch, writer):
     """
     Run evaluation
     """
@@ -227,6 +239,7 @@ def validate(val_loader, model, criterion):
             # measure elapsed time
             batch_time.update(time.time() - end)
             end = time.time()
+        writer.add_scalar("Top-1 test accuracy", top1.avg, epoch*len(val_loader))
 
 
     print(f"Valid: Prec@1 {top1.avg:.3f} \t (Time: {batch_time.avg:.3f}, Loss: {losses.avg:.4f})")
