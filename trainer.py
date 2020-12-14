@@ -17,11 +17,14 @@ model_names = sorted(name for name in resnet.__dict__
                      and callable(resnet.__dict__[name]))
 
 parser = argparse.ArgumentParser(description='Propert ResNets for CIFAR10 in pytorch')
+parser.add_argument('--dataset', '--ds', default='CIFAR10',
+                    choices=["CIFAR10", "CIFAR100", "CIFAR100Coarse"],
+                    help="Dataset to use")
 parser.add_argument('--arch', '-a', metavar='ARCH', default='resnet32',
                     choices=model_names,
                     help='model architecture: ' + ' | '.join(model_names) +
                     ' (default: resnet32)')
-parser.add_argument('--base_width', metavar='WIDTH', default=16, type=int,
+parser.add_argument('--base-width', metavar='WIDTH', default=16, type=int,
                     help='width of the base layer')
 parser.add_argument('-j', '--workers', default=4, type=int, metavar='N',
                     help='number of data loading workers (default: 4)')
@@ -54,7 +57,7 @@ def main():
 
     cudnn.benchmark = True
 
-    dataset = cifar.CIFAR10('~/datasets', pin_memory=True)
+    dataset = cifar.__dict__[args.dataset]('~/datasets', pin_memory=True)
 
     train_loader = dataset.get_train_loader(args.batch_size, shuffle=True,
                                             num_workers=args.workers)
@@ -66,7 +69,6 @@ def main():
         base_width=args.base_width
     ))
     model.cuda()
-    print(model)
 
     model.eval()
     with torch.no_grad():
@@ -169,13 +171,14 @@ def train(train_loader, model, criterion, optimizer, epoch, writer):
                   'Prec@1 {top1.val:.3f} ({top1.avg:.3f})'.format(
                       epoch, i, len(train_loader), batch_time=batch_time,
                       data_time=data_time, loss=losses, top1=top1))
+            writer.add_scalar("Train loss", losses.avg, epoch*len(train_loader)+i)
             writer.add_scalar("Top-1 accuracy", top1.avg, epoch*len(train_loader)+i)
 
     print(f"Train: [{epoch}]\t\t"
-          "Time {batch_time.avg:.3f}\t"
-          "(DL {data_time.avg:.3f})\t"
-          "Loss {losses.avg:.4f}\t\t"
-          "Prec@1 {top1.avg:.3f}")
+          f"Time {batch_time.avg:.3f}\t"
+          f"(DL {data_time.avg:.3f})\t"
+          f"Loss {losses.avg:.4f}\t\t"
+          f"Prec@1 {top1.avg:.3f}")
 
 
 def validate(val_loader, model, criterion, epoch, writer):
@@ -213,6 +216,7 @@ def validate(val_loader, model, criterion, epoch, writer):
             # measure elapsed time
             batch_time.update(time.time() - end)
             end = time.time()
+        writer.add_scalar("Test loss", losses.avg, epoch*len(val_loader)+i)
         writer.add_scalar("Top-1 test accuracy", top1.avg, epoch*len(val_loader))
 
     print(f"Valid: Prec@1 {top1.avg:.3f} \t (Time: {batch_time.avg:.3f}, Loss: {losses.avg:.4f})")
