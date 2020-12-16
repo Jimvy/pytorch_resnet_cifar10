@@ -1,6 +1,8 @@
 import argparse
+from datetime import datetime
 import os
 import shutil
+import socket
 import time
 
 import torch
@@ -11,6 +13,8 @@ import torch.optim
 import torch.utils.data
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
+from torch.utils.tensorboard import SummaryWriter
+
 import resnet
 
 model_names = sorted(name for name in resnet.__dict__
@@ -49,12 +53,6 @@ parser.add_argument('--pretrained', dest='pretrained', action='store_true',
                     help='use pre-trained model')
 parser.add_argument('--half', dest='half', action='store_true',
                     help='use half-precision(16-bit) ')
-parser.add_argument('--save-dir', dest='save_dir',
-                    help='The directory used to save the trained models',
-                    default='save_temp', type=str)
-parser.add_argument('--save-every', dest='save_every',
-                    help='Saves checkpoints at every specified number of epochs',
-                    type=int, default=10)
 best_prec1 = 0
 
 
@@ -62,13 +60,17 @@ def main():
     global args, best_prec1
     args = parser.parse_args()
 
-
-    # Check the save_dir exists or not
-    if not os.path.exists(args.save_dir):
-        os.makedirs(args.save_dir)
-
     model = torch.nn.DataParallel(resnet.__dict__[args.arch]())
     model.cuda()
+    writer = SummaryWriter(log_dir=os.path.join(
+        'runs',
+        '{current_time}_{hostname}_{net}_{gpus}'.format(
+            current_time=datetime.now().strftime('%b%d_%H-%M-%S'),
+            hostname=socket.gethostname(),
+            net=args.arch,
+            gpus=os.environ['CUDA_VISIBLE_DEVICES']
+        )
+    ))
 
     # optionally resume from a checkpoint
     if args.resume:
@@ -106,6 +108,12 @@ def main():
         batch_size=128, shuffle=False,
         num_workers=args.workers, pin_memory=True)
 
+    model.eval()
+    with torch.no_grad():
+        sample_imgs, sample_labels = next(iter(val_loader))
+        writer.add_graph(model.module, sample_imgs.cuda())
+    model.train()
+
     # define loss function (criterion) and optimizer
     criterion = nn.CrossEntropyLoss().cuda()
 
@@ -135,30 +143,21 @@ def main():
 
         # train for one epoch
         print('current lr {:.5e}'.format(optimizer.param_groups[0]['lr']))
-        train(train_loader, model, criterion, optimizer, epoch)
+        train(train_loader, model, criterion, optimizer, epoch, writer)
         lr_scheduler.step()
 
         # evaluate on validation set
-        prec1 = validate(val_loader, model, criterion)
+        prec1 = validate(val_loader, model, criterion, epoch, writer)
 
         # remember best prec@1 and save checkpoint
         is_best = prec1 > best_prec1
         best_prec1 = max(prec1, best_prec1)
 
-        if epoch > 0 and epoch % args.save_every == 0:
-            save_checkpoint({
-                'epoch': epoch + 1,
-                'state_dict': model.state_dict(),
-                'best_prec1': best_prec1,
-            }, is_best, filename=os.path.join(args.save_dir, 'checkpoint.th'))
-
-        save_checkpoint({
-            'state_dict': model.state_dict(),
-            'best_prec1': best_prec1,
-        }, is_best, filename=os.path.join(args.save_dir, 'model.th'))
+    writer.flush()
+    writer.close()
 
 
-def train(train_loader, model, criterion, optimizer, epoch):
+def train(train_loader, model, criterion, optimizer, epoch, writer):
     """
         Run one train epoch
     """
@@ -171,20 +170,19 @@ def train(train_loader, model, criterion, optimizer, epoch):
     model.train()
 
     end = time.time()
-    for i, (input, target) in enumerate(train_loader):
+    for i, (inputs, target) in enumerate(train_loader):
 
         # measure data loading time
         data_time.update(time.time() - end)
 
+        input_var = inputs.cuda()
         target = target.cuda()
-        input_var = input.cuda()
-        target_var = target
         if args.half:
             input_var = input_var.half()
 
         # compute output
         output = model(input_var)
-        loss = criterion(output, target_var)
+        loss = criterion(output, target)
 
         # compute gradient and do SGD step
         optimizer.zero_grad()
@@ -195,8 +193,8 @@ def train(train_loader, model, criterion, optimizer, epoch):
         loss = loss.float()
         # measure accuracy and record loss
         prec1 = accuracy(output.data, target)[0]
-        losses.update(loss.item(), input.size(0))
-        top1.update(prec1.item(), input.size(0))
+        losses.update(loss.item(), inputs.size(0))
+        top1.update(prec1.item(), inputs.size(0))
 
         # measure elapsed time
         batch_time.update(time.time() - end)
@@ -204,15 +202,17 @@ def train(train_loader, model, criterion, optimizer, epoch):
 
         if i % args.print_freq == 0:
             print('Epoch: [{0}][{1}/{2}]\t'
-                  'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
-                  'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
+                  'Time {batch_time.val:.3f}\t'
+                  'DL {data_time.val:.3f}\t'
                   'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
                   'Prec@1 {top1.val:.3f} ({top1.avg:.3f})'.format(
                       epoch, i, len(train_loader), batch_time=batch_time,
                       data_time=data_time, loss=losses, top1=top1))
+            writer.add_scalar("Prec@1 train", top1.avg, epoch*len(train_loader)+i)
+            writer.add_scalar("Train loss", losses.avg, epoch*len(train_loader)+i)
 
 
-def validate(val_loader, model, criterion):
+def validate(val_loader, model, criterion, epoch, writer):
     """
     Run evaluation
     """
@@ -225,39 +225,33 @@ def validate(val_loader, model, criterion):
 
     end = time.time()
     with torch.no_grad():
-        for i, (input, target) in enumerate(val_loader):
+        for i, (inputs, target) in enumerate(val_loader):
+            input_var = inputs.cuda()
             target = target.cuda()
-            input_var = input.cuda()
-            target_var = target.cuda()
 
             if args.half:
                 input_var = input_var.half()
 
             # compute output
             output = model(input_var)
-            loss = criterion(output, target_var)
+            loss = criterion(output, target)
 
             output = output.float()
             loss = loss.float()
 
             # measure accuracy and record loss
             prec1 = accuracy(output.data, target)[0]
-            losses.update(loss.item(), input.size(0))
-            top1.update(prec1.item(), input.size(0))
+            losses.update(loss.item(), inputs.size(0))
+            top1.update(prec1.item(), inputs.size(0))
 
             # measure elapsed time
             batch_time.update(time.time() - end)
             end = time.time()
+        writer.add_scalar("Prec@1 test", top1.avg, epoch * len(val_loader))
+        writer.add_scalar("Test loss", top1.avg, epoch * len(val_loader))
 
-            if i % args.print_freq == 0:
-                print('Test: [{0}/{1}]\t'
-                      'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
-                      'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
-                      'Prec@1 {top1.val:.3f} ({top1.avg:.3f})'.format(
-                          i, len(val_loader), batch_time=batch_time, loss=losses,
-                          top1=top1))
 
-    print(' * Prec@1 {top1.avg:.3f}'
+    print('Valid: Prec@1 {top1.avg:.3f}'
           .format(top1=top1))
 
     return top1.avg
