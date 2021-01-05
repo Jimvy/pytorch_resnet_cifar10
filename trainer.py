@@ -1,4 +1,8 @@
 import argparse
+from datetime import datetime
+import os
+import shutil
+import socket
 import time
 
 import torch
@@ -18,7 +22,10 @@ model_names = sorted(name for name in resnet.__dict__
                      and name.startswith("resnet")
                      and callable(resnet.__dict__[name]))
 
-parser = argparse.ArgumentParser(description='Propert ResNets for CIFAR10 in pytorch')
+parser = argparse.ArgumentParser(
+    description='Propert ResNets for CIFAR10 in pytorch',
+    formatter_class=argparse.ArgumentDefaultsHelpFormatter
+)
 parser.add_argument('--dataset', '--ds', default='CIFAR10',
                     choices=["CIFAR10", "CIFAR100", "CIFAR100Coarse"],
                     help="Dataset to use")
@@ -29,25 +36,33 @@ parser.add_argument('--arch', '-a', metavar='ARCH', default='resnet32',
 parser.add_argument('--base-width', metavar='WIDTH', default=16, type=int,
                     help='width of the base layer')
 parser.add_argument('-j', '--workers', default=4, type=int, metavar='N',
-                    help='number of data loading workers (default: 4)')
+                    help='number of data loading workers')
 parser.add_argument('--epochs', default=200, type=int, metavar='N',
                     help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
                     help='manual epoch number (useful on restarts)')
 parser.add_argument('-b', '--batch-size', default=128, type=int,
-                    metavar='N', help='mini-batch size (default: 128)')
+                    metavar='N', help='mini-batch size')
 parser.add_argument('--lr', '--learning-rate', default=0.1, type=float,
-                    metavar='LR', help='initial learning rate')
+                    metavar='LR', help='initial learning rate'
+                    '\nNote that for ResNet-112/1202 it is 1e-2')
 parser.add_argument('--momentum', default=0.9, type=float, metavar='M',
                     help='momentum')
 parser.add_argument('--weight-decay', '--wd', default=1e-4, type=float,
-                    metavar='W', help='weight decay (default: 1e-4)')
-parser.add_argument('--print-freq', '-p', default=50, type=int,
-                    metavar='N', help='print frequency (default: 50)')
+                    metavar='W', help='weight decay')
+parser.add_argument('--print-freq', '-p', default=300, type=int,
+                    metavar='N', help='print frequency')
+parser.add_argument('--resume', default='', type=str, metavar='PATH',
+                    help='path to latest checkpoint')
+parser.add_argument('--log-freq', '--lf', default=100, type=int, metavar='N',
+                    help="TensorBoard log frequency during training")
 parser.add_argument('-e', '--evaluate', dest='evaluate', action='store_true',
                     help='evaluate model on validation set')
 parser.add_argument('--half', dest='half', action='store_true',
-                    help='use half-precision(16-bit) ')
+                    help='use half-precision (16-bit)')
+parser.add_argument('--use-lr-warmup', action='store_true',
+                    help="Use learning scheduler 2 to warmup the learning rate")
+parser.add_argument('--comment', type=str, help='Commentary on the run')
 best_prec1 = 0
 
 
@@ -55,11 +70,29 @@ def main():
     global args, best_prec1
     args = parser.parse_args()
 
-    writer = SummaryWriter()
-
     cudnn.benchmark = True
 
     dataset = cifar.__dict__[args.dataset]('~/datasets', pin_memory=True)
+
+    model = torch.nn.DataParallel(resnet.__dict__[args.arch]())
+    model.cuda()
+
+    comments = "_".join([x[1] for x in [(args.use_lr_warmup, "use_lr_warmup"), (args.comment, args.comment)] if x[0]])
+
+    writer = SummaryWriter(log_dir=os.path.join(
+        'runs',
+        '{current_time}_{hostname}_{net}_gpu{gpus}_wd={weight_decay}_lr={lr}_b={bs}_j{num_workers}{comments}'.format(
+            current_time=datetime.now().strftime('%b%d_%H-%M-%S'),
+            hostname=socket.gethostname(),
+            net=args.arch,
+            gpus=os.environ['CUDA_VISIBLE_DEVICES'],
+            weight_decay=args.weight_decay,
+            lr=args.lr,
+            bs=args.batch_size,
+            num_workers=args.workers,
+            comments=("_" + comments) if comments else ""
+        )
+    ))
 
     train_loader = dataset.get_train_loader(args.batch_size, shuffle=True,
                                             num_workers=args.workers)
@@ -71,12 +104,6 @@ def main():
         base_width=args.base_width
     ))
     model.cuda()
-
-    model.eval()
-    with torch.no_grad():
-        sample_imgs, sample_labels = next(iter(val_loader))
-        writer.add_graph(model.module, sample_imgs.cuda())
-    model.train()
 
     # define loss function (criterion) and optimizer
     criterion = nn.CrossEntropyLoss().cuda()
@@ -91,13 +118,16 @@ def main():
 
     lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer,
                                                         milestones=[100, 150], last_epoch=args.start_epoch - 1)
-
-    if args.arch in ['resnet1202', 'resnet110']:
-        # for resnet1202 original paper uses lr=0.01 for first 400 minibatches
-        # for warm-up then switch back.
-        # In this setup it will correspond for first epoch.
+    if args.use_lr_warmup:
         for param_group in optimizer.param_groups:
             param_group['lr'] = args.lr*0.1
+        lr_scheduler2 = torch.optim.lr_scheduler.MultiStepLR(
+            optimizer,
+            gamma=10,
+            milestones=[2] # First two epochs
+        )
+    else:
+        lr_scheduler2 = None
 
     if args.evaluate:
         validate(val_loader, model, criterion)
@@ -109,6 +139,8 @@ def main():
         print('current lr {:.5e}'.format(optimizer.param_groups[0]['lr']))
         train(train_loader, model, criterion, optimizer, epoch, writer)
         lr_scheduler.step()
+        if lr_scheduler2:
+            lr_scheduler2.step()
 
         # evaluate on validation set
         prec1 = validate(val_loader, model, criterion, epoch, writer)
@@ -117,7 +149,8 @@ def main():
         best_prec1 = max(prec1, best_prec1)
 
     # TODO: add precision-recall curve
-    writer.flush()
+    if hasattr(writer, "flush"):
+        writer.flush()
     writer.close()
 
 
@@ -134,20 +167,19 @@ def train(train_loader, model, criterion, optimizer, epoch, writer):
     model.train()
 
     end = time.time()
-    for i, (input, target) in enumerate(train_loader):
+    for i, (inputs, target) in enumerate(train_loader):
 
         # measure data loading time
         data_time.update(time.time() - end)
 
+        input_var = inputs.cuda()
         target = target.cuda()
-        input_var = input.cuda()
-        target_var = target
         if args.half:
             input_var = input_var.half()
 
         # compute output
         output = model(input_var)
-        loss = criterion(output, target_var)
+        loss = criterion(output, target)
 
         # compute gradient and do SGD step
         optimizer.zero_grad()
@@ -158,24 +190,27 @@ def train(train_loader, model, criterion, optimizer, epoch, writer):
         loss = loss.float()
         # measure accuracy and record loss
         prec1 = accuracy(output.data, target)[0]
-        losses.update(loss.item(), input.size(0))
-        top1.update(prec1.item(), input.size(0))
+        losses.update(loss.item(), inputs.size(0))
+        top1.update(prec1.item(), inputs.size(0))
 
         # measure elapsed time
         batch_time.update(time.time() - end)
         end = time.time()
 
-        if i % args.print_freq == 0:
-            print('Train: [{0}][{1}/{2}]\t'
+        if i % args.print_freq == (args.print_freq-1):
+            print('Epoch: [{0}][{1}/{2}]\t'
                   'Time {batch_time.val:.3f}\t'
                   'DL {data_time.val:.3f}\t'
                   'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
                   'Prec@1 {top1.val:.3f} ({top1.avg:.3f})'.format(
                       epoch, i, len(train_loader), batch_time=batch_time,
                       data_time=data_time, loss=losses, top1=top1))
-            writer.add_scalar("Train loss", losses.avg, epoch*len(train_loader)+i)
-            writer.add_scalar("Top-1 accuracy", top1.avg, epoch*len(train_loader)+i)
+        if i % args.log_freq == (args.log_freq-1):
+            writer.add_scalar("Prec1 train", top1.avg, epoch + i/len(train_loader))
+            writer.add_scalar("Train loss", losses.avg, epoch + i/len(train_loader))
 
+    writer.add_scalar("Prec1 train", top1.avg, epoch+1)
+    writer.add_scalar("Train loss", losses.avg, epoch+1)
     print(f"Train: [{epoch}]\t\t"
           f"Time {batch_time.avg:.3f}\t"
           f"(DL {data_time.avg:.3f})\t"
@@ -218,10 +253,11 @@ def validate(val_loader, model, criterion, epoch, writer):
             # measure elapsed time
             batch_time.update(time.time() - end)
             end = time.time()
-        writer.add_scalar("Test loss", losses.avg, epoch*len(val_loader)+i)
-        writer.add_scalar("Top-1 test accuracy", top1.avg, epoch*len(val_loader))
 
-    print(f"Valid: Prec@1 {top1.avg:.3f} \t (Time: {batch_time.avg:.3f}, Loss: {losses.avg:.4f})")
+        writer.add_scalar("Prec1 valid", top1.avg, epoch)
+        writer.add_scalar("Valid loss", top1.avg, epoch)
+
+    print(f"Valid: Prec1 {top1.avg:.3f} \t (Time: {batch_time.avg:.3f}, Loss: {losses.avg:.4f})")
 
     return top1.avg
 
