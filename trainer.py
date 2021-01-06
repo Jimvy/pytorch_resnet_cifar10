@@ -211,11 +211,6 @@ def train(train_loader, model, criterion, optimizer, epoch, writer):
 
     writer.add_scalar("Prec1 train", top1.avg, epoch+1)
     writer.add_scalar("Train loss", losses.avg, epoch+1)
-    print(f"Train: [{epoch}]\t\t"
-          f"Time {batch_time.avg:.3f}\t"
-          f"(DL {data_time.avg:.3f})\t"
-          f"Loss {losses.avg:.4f}\t\t"
-          f"Prec@1 {top1.avg:.3f}")
 
 
 def validate(val_loader, model, criterion, epoch, writer):
