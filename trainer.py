@@ -35,7 +35,7 @@ parser.add_argument('--arch', '-a', metavar='ARCH', default='resnet32',
                     ' (default: resnet32)')
 parser.add_argument('--base-width', metavar='WIDTH', default=16, type=int,
                     help='width of the base layer')
-parser.add_argument('-j', '--workers', default=4, type=int, metavar='N',
+parser.add_argument('-j', '--workers', default=2, type=int, metavar='N',
                     help='number of data loading workers')
 parser.add_argument('--epochs', default=200, type=int, metavar='N',
                     help='number of total epochs to run')
@@ -50,12 +50,12 @@ parser.add_argument('--momentum', default=0.9, type=float, metavar='M',
                     help='momentum')
 parser.add_argument('--weight-decay', '--wd', default=1e-4, type=float,
                     metavar='W', help='weight decay')
-parser.add_argument('--print-freq', '-p', default=300, type=int,
-                    metavar='N', help='print frequency')
+parser.add_argument('--print-freq', '-p', default=2, type=int,
+                    metavar='N', help='print frequency (per epoch)')
 parser.add_argument('--resume', default='', type=str, metavar='PATH',
                     help='path to latest checkpoint')
-parser.add_argument('--log-freq', '--lf', default=100, type=int, metavar='N',
-                    help="TensorBoard log frequency during training")
+parser.add_argument('--log-freq', '--lf', default=4, type=int, metavar='N',
+                    help="TensorBoard log frequency during training (per epoch)")
 parser.add_argument('-e', '--evaluate', dest='evaluate', action='store_true',
                     help='evaluate model on validation set')
 parser.add_argument('--half', dest='half', action='store_true',
@@ -166,6 +166,9 @@ def train(train_loader, model, criterion, optimizer, epoch, writer):
     # switch to train mode
     model.train()
 
+    print_period = (len(train_loader) // args.print_freq) + 1
+    log_period = (len(train_loader) // args.log_freq) + 1
+
     end = time.time()
     for i, (inputs, target) in enumerate(train_loader):
 
@@ -197,7 +200,7 @@ def train(train_loader, model, criterion, optimizer, epoch, writer):
         batch_time.update(time.time() - end)
         end = time.time()
 
-        if i % args.print_freq == (args.print_freq-1):
+        if i % print_period == print_period-1:
             print('Epoch: [{0}][{1}/{2}]\t'
                   'Time {batch_time.val:.3f}\t'
                   'DL {data_time.val:.3f}\t'
@@ -205,10 +208,17 @@ def train(train_loader, model, criterion, optimizer, epoch, writer):
                   'Prec@1 {top1.val:.3f} ({top1.avg:.3f})'.format(
                       epoch, i, len(train_loader), batch_time=batch_time,
                       data_time=data_time, loss=losses, top1=top1))
-        if i % args.log_freq == (args.log_freq-1):
+        if i % log_period == log_period-1:
             writer.add_scalar("Prec1 train", top1.avg, epoch + i/len(train_loader))
             writer.add_scalar("Train loss", losses.avg, epoch + i/len(train_loader))
 
+    print('Epoch: [{0}][done]\t'
+          'Time {batch_time.val:.3f}\t'
+          'DL {data_time.val:.3f}\t'
+          'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
+          'Prec@1 {top1.val:.3f} ({top1.avg:.3f})'.format(
+              epoch, batch_time=batch_time,
+              data_time=data_time, loss=losses, top1=top1))
     writer.add_scalar("Prec1 train", top1.avg, epoch+1)
     writer.add_scalar("Train loss", losses.avg, epoch+1)
 
