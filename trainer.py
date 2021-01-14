@@ -62,6 +62,8 @@ parser.add_argument('--half', dest='half', action='store_true',
                     help='use half-precision (16-bit)')
 parser.add_argument('--use-lr-warmup', action='store_true',
                     help="Use learning scheduler 2 to warmup the learning rate")
+parser.add_argument('--lr-warmup-num-epochs', type=int, default=2,
+                    help='Number of epochs for the warmup, if set')
 parser.add_argument('--comment', type=str, help='Commentary on the run')
 best_prec1 = 0
 
@@ -124,10 +126,15 @@ def main():
         lr_scheduler2 = torch.optim.lr_scheduler.MultiStepLR(
             optimizer,
             gamma=10,
-            milestones=[2] # First two epochs
+            milestones=[args.lr_warmup_num_epochs] # First two epochs
         )
     else:
         lr_scheduler2 = None
+
+    if args.print_freq < 1:
+        args.print_freq = 1
+    if args.log_freq < 1:
+        args.log_freq = 1
 
     if args.evaluate:
         validate(val_loader, model, criterion)
