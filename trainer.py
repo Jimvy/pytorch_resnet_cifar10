@@ -67,7 +67,13 @@ parser.add_argument('--use-lr-warmup', action='store_true',
 parser.add_argument('--lr-warmup-num-epochs', type=int, default=2,
                     help='Number of epochs for the warmup, if set')
 parser.add_argument('--comment', type=str, help='Commentary on the run')
+
+FOLDER_INCLUDED_ARGS = [('ds', 'dataset'), ('bs', 'batch_size'), ('lr', 'lr'), ('wd', 'weight_decay')]
+FOLDER_IGNORED_ARGS = ['arch', 'workers', 'resume', 'log_freq', 'print_freq', 'momentum', 'start_epoch', 'epochs']
+
 best_prec1 = 0
+
+ROOT_LOG_FOLDER = 'runs_tst'
 
 
 class LRSchedulerSequence(LRScheduler):
@@ -86,9 +92,39 @@ class LRSchedulerSequence(LRScheduler):
             self.schedulers.append(scheduler)
 
 
+def get_folder_name():
+    global args
+    attrs = ['{}'.format(datetime.now().strftime('%b%d_%H-%M-%S'))]
+    attrs.append('{}'.format(socket.gethostname()))
+    attrs.append('gpu{}'.format(os.environ.get('CUDA_VISIBLE_DEVICES', 'all')))
+    attrs.append(args.arch)
+    arg_keys = sorted(vars(args).keys())
+    for (arg_key_print, arg_key_name) in FOLDER_INCLUDED_ARGS:
+        attrs.append(f'{arg_key_print}={getattr(args, arg_key_name)}')
+        arg_keys.remove(arg_key_name)
+    for arg_key in arg_keys:
+        arg_val = getattr(args, arg_key)
+        if arg_key in FOLDER_IGNORED_ARGS:
+            pass
+        elif arg_key == 'comment':
+            pass
+        elif arg_key == 'lr_warmup_num_epochs' and not args.use_lr_warmup:
+            pass
+        elif isinstance(arg_val, bool):
+            if arg_val:
+                attrs.append(arg_key)
+        else:
+            attrs.append('{}={}'.format(arg_key, arg_val))
+    if args.comment:
+        attrs.append(args.comment)
+    return '_'.join(attrs)
+
+
 def main():
     global args, best_prec1
     args = parser.parse_args()
+
+    log_subfolder = get_folder_name()
 
     cudnn.benchmark = True
 
@@ -97,21 +133,8 @@ def main():
     model = torch.nn.DataParallel(resnet.__dict__[args.arch]())
     model.cuda()
 
-    comments = "_".join([x[1] for x in [(args.use_lr_warmup, "use_lr_warmup"), (args.comment, args.comment)] if x[0]])
-
     writer = SummaryWriter(log_dir=os.path.join(
-        'runs',
-        '{current_time}_{hostname}_{net}_gpu{gpus}_wd={weight_decay}_lr={lr}_b={bs}_j{num_workers}{comments}'.format(
-            current_time=datetime.now().strftime('%b%d_%H-%M-%S'),
-            hostname=socket.gethostname(),
-            net=args.arch,
-            gpus=os.environ['CUDA_VISIBLE_DEVICES'],
-            weight_decay=args.weight_decay,
-            lr=args.lr,
-            bs=args.batch_size,
-            num_workers=args.workers,
-            comments=("_" + comments) if comments else ""
-        )
+        ROOT_LOG_FOLDER, log_subfolder
     ))
 
     layout = {
