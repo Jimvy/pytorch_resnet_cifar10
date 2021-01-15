@@ -10,6 +10,8 @@ import torch.nn as nn
 import torch.nn.parallel
 import torch.backends.cudnn as cudnn
 import torch.optim
+from torch.optim import lr_scheduler as topt_lr_scheduler
+from torch.optim.lr_scheduler import _LRScheduler as LRScheduler
 from torch.utils.tensorboard import SummaryWriter
 
 import resnet
@@ -23,7 +25,7 @@ model_names = sorted(name for name in resnet.__dict__
                      and callable(resnet.__dict__[name]))
 
 parser = argparse.ArgumentParser(
-    description='Propert ResNets for CIFAR10 in pytorch',
+    description='Proper ResNets for CIFAR10 in pytorch',
     formatter_class=argparse.ArgumentDefaultsHelpFormatter
 )
 parser.add_argument('--dataset', '--ds', default='CIFAR10',
@@ -68,6 +70,22 @@ parser.add_argument('--comment', type=str, help='Commentary on the run')
 best_prec1 = 0
 
 
+class LRSchedulerSequence(LRScheduler):
+    def __init__(self, *args):
+        self.schedulers = []
+        for scheduler in args:
+            if isinstance(scheduler, LRScheduler):
+                self.schedulers.append(scheduler)
+
+    def step(self, *args, **kwargs):
+        for scheduler in self.schedulers:
+            scheduler.step(*args, **kwargs)
+
+    def add_scheduler(self, *args):
+        for scheduler in args:
+            self.schedulers.append(scheduler)
+
+
 def main():
     global args, best_prec1
     args = parser.parse_args()
@@ -96,6 +114,17 @@ def main():
         )
     ))
 
+    layout = {
+        'Prec@1': {
+            'prec@1': ['Multiline', ['Prec1/train', 'Prec1/valid']],
+        },
+        'Losses': {
+            'Train': ['Multiline', ['Loss/train']],
+            'Valid': ['Multiline', ['Loss/valid']]
+        }
+    }
+    writer.add_custom_scalars(layout)
+
     train_loader = dataset.get_train_loader(args.batch_size, shuffle=True,
                                             num_workers=args.workers)
 
@@ -118,18 +147,18 @@ def main():
                                 momentum=args.momentum,
                                 weight_decay=args.weight_decay)
 
-    lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer,
-                                                        milestones=[100, 150], last_epoch=args.start_epoch - 1)
+    lr_scheduler1 = topt_lr_scheduler.MultiStepLR(optimizer,
+                                                  milestones=[100, 150], last_epoch=args.start_epoch - 1)
+    main_lr_scheduler = LRSchedulerSequence(lr_scheduler1)
     if args.use_lr_warmup:
         for param_group in optimizer.param_groups:
             param_group['lr'] = args.lr*0.1
-        lr_scheduler2 = torch.optim.lr_scheduler.MultiStepLR(
+        lr_scheduler2 = topt_lr_scheduler.MultiStepLR(
             optimizer,
             gamma=10,
             milestones=[args.lr_warmup_num_epochs] # First two epochs
         )
-    else:
-        lr_scheduler2 = None
+        main_lr_scheduler.add_scheduler(lr_scheduler2)
 
     if args.print_freq < 1:
         args.print_freq = 1
@@ -140,20 +169,9 @@ def main():
         validate(val_loader, model, criterion)
         return
 
-    for epoch in range(args.start_epoch, args.epochs):
+    # TODO: add hparams to TensorBoard
 
-        # train for one epoch
-        print('current lr {:.5e}'.format(optimizer.param_groups[0]['lr']))
-        train(train_loader, model, criterion, optimizer, epoch, writer)
-        lr_scheduler.step()
-        if lr_scheduler2:
-            lr_scheduler2.step()
-
-        # evaluate on validation set
-        prec1 = validate(val_loader, model, criterion, epoch, writer)
-
-        # remember best prec@1 and save checkpoint
-        best_prec1 = max(prec1, best_prec1)
+    train(train_loader, val_loader, model, criterion, optimizer, main_lr_scheduler, writer)
 
     # TODO: add precision-recall curve
     if hasattr(writer, "flush"):
@@ -161,7 +179,24 @@ def main():
     writer.close()
 
 
-def train(train_loader, model, criterion, optimizer, epoch, writer):
+def train(train_loader, val_loader, model, criterion, optimizer, lr_scheduler, writer):
+
+    global best_prec1
+    for epoch in range(args.start_epoch, args.epochs):
+
+        # train for one epoch
+        writer.add_scalar("base_learning_rate", optimizer.param_groups[0]['lr'], epoch)
+        train_one_epoch(train_loader, model, criterion, optimizer, epoch, writer)
+        lr_scheduler.step()
+
+        # evaluate on validation set
+        prec1 = validate(val_loader, model, criterion, epoch, writer)
+
+        # remember best prec@1 and save checkpoint
+        best_prec1 = max(prec1, best_prec1)
+
+
+def train_one_epoch(train_loader, model, criterion, optimizer, epoch, writer):
     """
         Run one train epoch
     """
@@ -216,8 +251,8 @@ def train(train_loader, model, criterion, optimizer, epoch, writer):
                       epoch, i, len(train_loader), batch_time=batch_time,
                       data_time=data_time, loss=losses, top1=top1))
         if i % log_period == log_period-1:
-            writer.add_scalar("Prec1 train", top1.avg, epoch + i/len(train_loader))
-            writer.add_scalar("Train loss", losses.avg, epoch + i/len(train_loader))
+            writer.add_scalar("Prec1/train", top1.avg, epoch + i/len(train_loader))
+            writer.add_scalar("Loss/train", losses.avg, epoch + i/len(train_loader))
 
     print('Epoch: [{0}][done]\t'
           'Time {batch_time.val:.3f}\t'
@@ -226,8 +261,8 @@ def train(train_loader, model, criterion, optimizer, epoch, writer):
           'Prec@1 {top1.val:.3f} ({top1.avg:.3f})'.format(
               epoch, batch_time=batch_time,
               data_time=data_time, loss=losses, top1=top1))
-    writer.add_scalar("Prec1 train", top1.avg, epoch+1)
-    writer.add_scalar("Train loss", losses.avg, epoch+1)
+    writer.add_scalar("Prec1/train", top1.avg, epoch+1)
+    writer.add_scalar("Loss/train", losses.avg, epoch+1)
 
 
 def validate(val_loader, model, criterion, epoch, writer):
@@ -266,8 +301,8 @@ def validate(val_loader, model, criterion, epoch, writer):
             batch_time.update(time.time() - end)
             end = time.time()
 
-        writer.add_scalar("Prec1 valid", top1.avg, epoch)
-        writer.add_scalar("Valid loss", top1.avg, epoch)
+        writer.add_scalar("Prec1/valid", top1.avg, epoch)
+        writer.add_scalar("Loss/valid", losses.avg, epoch)
 
     print(f"Valid: Prec1 {top1.avg:.3f} \t (Time: {batch_time.avg:.3f}, Loss: {losses.avg:.4f})")
 
