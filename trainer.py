@@ -73,7 +73,7 @@ FOLDER_IGNORED_ARGS = ['arch', 'workers', 'resume', 'log_freq', 'print_freq', 'm
 
 best_prec1 = 0
 
-ROOT_LOG_FOLDER = 'runs_tst'
+ROOT_LOG_FOLDER = 'runs'
 
 
 class LRSchedulerSequence(LRScheduler):
@@ -125,13 +125,12 @@ def main():
     args = parser.parse_args()
 
     log_subfolder = get_folder_name()
+    checkpoint_filename = os.path.join(ROOT_LOG_FOLDER, log_subfolder, 'model.th')
+    args.checkpoint_filename = checkpoint_filename
 
     cudnn.benchmark = True
 
     dataset = cifar.__dict__[args.dataset]('~/datasets', pin_memory=True)
-
-    model = torch.nn.DataParallel(resnet.__dict__[args.arch]())
-    model.cuda()
 
     writer = SummaryWriter(log_dir=os.path.join(
         ROOT_LOG_FOLDER, log_subfolder
@@ -153,18 +152,28 @@ def main():
 
     val_loader = dataset.get_test_loader(128, num_workers=args.workers)
 
-    model = torch.nn.DataParallel(resnet.__dict__[args.arch](
+    model = resnet.__dict__[args.arch](
         num_classes=dataset.get_num_classes(),
         base_width=args.base_width
-    ))
+    )
     model.cuda()
-
-    # define loss function (criterion) and optimizer
-    criterion = nn.CrossEntropyLoss().cuda()
 
     if args.half:
         model.half()
         criterion.half()
+
+    if args.resume:
+        if os.path.isfile(args.resume):
+            print("Loading checkpoint '{}'".format(args.resume))
+            chkpt = torch.load(args.resume)
+            model.load_state_dict(chkpt['state_dict'])
+            best_prec1 = chkpt['best_prec1']
+            print("Loaded checkpoint")
+        else:
+            print(f"No checkpoint found at '{args.resume}'")
+
+    # define loss function (criterion) and optimizer
+    criterion = nn.CrossEntropyLoss().cuda()
 
     optimizer = torch.optim.SGD(model.parameters(), args.lr,
                                 momentum=args.momentum,
@@ -202,9 +211,14 @@ def main():
     writer.close()
 
 
-def train(train_loader, val_loader, model, criterion, optimizer, lr_scheduler, writer):
+def train(train_loader, val_loader, model, criterion, optimizer, lr_scheduler, writer, checkpoint_filename=None):
 
-    global best_prec1
+    global args
+
+    if not checkpoint_filename:
+        checkpoint_filename=args.checkpoint_filename
+    best_prec1 = 0
+
     for epoch in range(args.start_epoch, args.epochs):
 
         # train for one epoch
@@ -216,7 +230,14 @@ def train(train_loader, val_loader, model, criterion, optimizer, lr_scheduler, w
         prec1 = validate(val_loader, model, criterion, epoch, writer)
 
         # remember best prec@1 and save checkpoint
+        is_best = prec1 > best_prec1
         best_prec1 = max(prec1, best_prec1)
+
+        if is_best:
+            torch.save({
+                'state_dict': model.state_dict(),
+                'best_prec1': best_prec1,
+            }, checkpoint_filename)
 
 
 def train_one_epoch(train_loader, model, criterion, optimizer, epoch, writer):
