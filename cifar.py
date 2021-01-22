@@ -18,12 +18,16 @@ class _BaseCIFAR:
         self.pin_memory = pin_memory
 
     def get_train_loader(self, batch_size, shuffle=True, num_workers=0,
-                         use_random_crops=True, use_hflips=True):
+                         use_random_crops=True, use_hflips=True,
+                         use_color_jitter=False):
         transforms = []
         if use_hflips:
             transforms.append(tvt.RandomHorizontalFlip())
         if use_random_crops:
             transforms.append(tvt.RandomCrop(32, padding=4))
+        if use_color_jitter:
+            transforms.append(tvt.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.05))
+
         transforms.append(tvt.ToTensor())
         transforms.append(tvt.Normalize(_BaseCIFAR.mean, _BaseCIFAR.stddev))
         trainset = self._ds(root=self.data_folder, download=True,

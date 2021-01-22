@@ -66,6 +66,8 @@ parser.add_argument('--use-lr-warmup', action='store_true',
                     help="Use learning scheduler 2 to warmup the learning rate")
 parser.add_argument('--lr-warmup-num-epochs', type=int, default=2,
                     help='Number of epochs for the warmup, if set')
+parser.add_argument('--use-color-jitter', '--cj', action='store_true',
+                    help='Use color jitter of 0.1 in train loader')
 parser.add_argument('--comment', type=str, help='Commentary on the run')
 
 FOLDER_INCLUDED_ARGS = [('ds', 'dataset'), ('bs', 'batch_size'), ('lr', 'lr'), ('wd', 'weight_decay')]
@@ -148,7 +150,8 @@ def main():
     writer.add_custom_scalars(layout)
 
     train_loader = dataset.get_train_loader(args.batch_size, shuffle=True,
-                                            num_workers=args.workers)
+                                            num_workers=args.workers,
+                                            use_color_jitter=args.use_color_jitter)
 
     val_loader = dataset.get_test_loader(128, num_workers=args.workers)
 
