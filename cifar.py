@@ -1,4 +1,5 @@
 import numpy as np
+import torch.utils.data as tud
 from torch.utils.data import DataLoader
 import torchvision.datasets as tvd
 import torchvision.transforms as tvt
@@ -36,6 +37,45 @@ class _BaseCIFAR:
                                  shuffle=shuffle, num_workers=num_workers,
                                  pin_memory=self.pin_memory)
         return trainloader
+
+    def get_train_val_loaders(self, batch_size, shuffle=True, num_workers=0,
+                             use_random_crops=True, use_hflips=True,
+                             use_color_jitter=False,
+                             split_val=0.1, max_perc=1.0):
+        r"""From Antoine Vanderschueren's cifar10.py file sent by Outlook"""
+        trainset = self._get_trainset(True, use_random_crops, use_hflips, use_color_jitter)
+        n_train = len(trainset)
+        indices = list(range(n_train))
+        split = int(n_train - (n_train * split_val))  # 90%/10% split by default
+        limited_split = round(max_perc*split)
+        trainset = tud.Subset(trainset, indices[:limited_split])
+        valset = self._get_trainset(False, False, False, False)
+        valset = tud.Subset(valset, indices[split:])
+        train_loader = DataLoader(trainset, batch_size=batch_size,
+                                  shuffle=shuffle, num_workers=num_workers,
+                                  pin_memory=self.pin_memory)
+        val_loader = DataLoader(valset, batch_size=batch_size,
+                                shuffle=False, num_workers=num_workers,
+                                pin_memory=self.pin_memory)
+        return train_loader, val_loader
+
+    def _get_trainset(self,
+                      download=True,
+                      use_random_crops=True,
+                      use_hflips=True,
+                      use_color_jitter=False):
+        transforms = []
+        if use_hflips:
+            transforms.append(tvt.RandomHorizontalFlip())
+        if use_random_crops:
+            transforms.append(tvt.RandomCrop(32, padding=4))
+        if use_color_jitter:
+            transforms.append(tvt.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.05))
+        transforms.append(tvt.ToTensor())
+        transforms.append(tvt.Normalize(_BaseCIFAR.mean, _BaseCIFAR.stddev))
+        trainset = self._ds(root=self.data_folder, download=download,
+                            train=True, transform=tvt.Compose(transforms))
+        return trainset
 
     def get_test_loader(self, batch_size, num_workers=0):
         transforms = [tvt.ToTensor()]

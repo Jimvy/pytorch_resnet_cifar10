@@ -149,11 +149,13 @@ def main():
     }
     writer.add_custom_scalars(layout)
 
-    train_loader = dataset.get_train_loader(args.batch_size, shuffle=True,
-                                            num_workers=args.workers,
-                                            use_color_jitter=args.use_color_jitter)
+    train_loader, val_loader = dataset.get_train_val_loaders(
+        args.batch_size, shuffle=True,
+        num_workers=args.workers,
+        use_color_jitter=args.use_color_jitter
+    )  # By default the split is at 90%/10%, so 45k/5k
 
-    val_loader = dataset.get_test_loader(128, num_workers=args.workers)
+    test_loader = dataset.get_test_loader(512, num_workers=args.workers)
 
     model = resnet.__dict__[args.arch](
         num_classes=dataset.get_num_classes(),
@@ -201,12 +203,13 @@ def main():
         args.log_freq = 1
 
     if args.evaluate:
-        validate(val_loader, model, criterion)
+        validate(val_loader, model, criterion, 42, writer)
+        validate(test_loader, model, criterion, 69, writer)
         return
 
     # TODO: add hparams to TensorBoard
 
-    train(train_loader, val_loader, model, criterion, optimizer, main_lr_scheduler, writer)
+    train(train_loader, val_loader, test_loader, model, criterion, optimizer, main_lr_scheduler, writer)
 
     # TODO: add precision-recall curve
     if hasattr(writer, "flush"):
@@ -214,7 +217,7 @@ def main():
     writer.close()
 
 
-def train(train_loader, val_loader, model, criterion, optimizer, lr_scheduler, writer, checkpoint_filename=None):
+def train(train_loader, val_loader, test_loader, model, criterion, optimizer, lr_scheduler, writer, checkpoint_filename=None):
 
     global args
 
@@ -231,6 +234,9 @@ def train(train_loader, val_loader, model, criterion, optimizer, lr_scheduler, w
 
         # evaluate on validation set
         prec1 = validate(val_loader, model, criterion, epoch, writer)
+
+        # For the testing, evaluate on test set too
+        validate(test_loader, model, criterion, epoch + 250, writer)
 
         # remember best prec@1 and save checkpoint
         is_best = prec1 > best_prec1
