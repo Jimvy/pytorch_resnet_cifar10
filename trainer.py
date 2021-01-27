@@ -68,6 +68,8 @@ parser.add_argument('--lr-warmup-num-epochs', type=int, default=2,
                     help='Number of epochs for the warmup, if set')
 parser.add_argument('--use-color-jitter', '--cj', action='store_true',
                     help='Use color jitter of 0.1 in train loader')
+parser.add_argument('--use-test-set-as-valid', action='store_true',
+                    help='Use test set as validation set, and the full train set as train set, instead of the 5k/45k split')
 parser.add_argument('--comment', type=str, help='Commentary on the run')
 
 FOLDER_INCLUDED_ARGS = [('ds', 'dataset'), ('bs', 'batch_size'), ('lr', 'lr'), ('wd', 'weight_decay')]
@@ -149,13 +151,19 @@ def main():
     }
     writer.add_custom_scalars(layout)
 
-    train_loader, val_loader = dataset.get_train_val_loaders(
-        args.batch_size, shuffle=True,
-        num_workers=args.workers,
-        use_color_jitter=args.use_color_jitter
-    )  # By default the split is at 90%/10%, so 45k/5k
-
-    test_loader = dataset.get_test_loader(512, num_workers=args.workers)
+    if args.use_test_set_as_valid:
+        train_loader = dataset.get_train_loader(
+            args.batch_size, shuffle=True,
+            num_workers=args.workers,
+            use_color_jitter=args.use_color_jitter
+        )
+        val_loader = dataset.get_test_loader(512, num_workers=args.workers)
+    else:
+        train_loader, val_loader = dataset.get_train_val_loaders(
+            args.batch_size, shuffle=True,
+            num_workers=args.workers,
+            use_color_jitter=args.use_color_jitter
+        )  # By default the split is at 90%/10%, so 45k/5k
 
     model = resnet.__dict__[args.arch](
         num_classes=dataset.get_num_classes(),
@@ -204,12 +212,11 @@ def main():
 
     if args.evaluate:
         validate(val_loader, model, criterion, 42, writer)
-        validate(test_loader, model, criterion, 69, writer)
         return
 
     # TODO: add hparams to TensorBoard
 
-    train(train_loader, val_loader, test_loader, model, criterion, optimizer, main_lr_scheduler, writer)
+    train(train_loader, val_loader, model, criterion, optimizer, main_lr_scheduler, writer)
 
     # TODO: add precision-recall curve
     if hasattr(writer, "flush"):
@@ -217,7 +224,7 @@ def main():
     writer.close()
 
 
-def train(train_loader, val_loader, test_loader, model, criterion, optimizer, lr_scheduler, writer, checkpoint_filename=None):
+def train(train_loader, val_loader, model, criterion, optimizer, lr_scheduler, writer, checkpoint_filename=None):
 
     global args
 
@@ -234,9 +241,6 @@ def train(train_loader, val_loader, test_loader, model, criterion, optimizer, lr
 
         # evaluate on validation set
         prec1 = validate(val_loader, model, criterion, epoch, writer)
-
-        # For the testing, evaluate on test set too
-        validate(test_loader, model, criterion, epoch + 250, writer)
 
         # remember best prec@1 and save checkpoint
         is_best = prec1 > best_prec1
