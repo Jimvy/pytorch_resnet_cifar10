@@ -7,6 +7,7 @@ import time
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.nn.parallel
 import torch.backends.cudnn as cudnn
 import torch.optim
@@ -31,20 +32,30 @@ parser = argparse.ArgumentParser(
 parser.add_argument('--dataset', '--ds', default='CIFAR10',
                     choices=["CIFAR10", "CIFAR100", "CIFAR100Coarse"],
                     help="Dataset to use")
+parser.add_argument('--use-test-set-as-valid', action='store_true',
+                    help='Use test set as validation set, and the full train set as train set, instead of the 5k/45k split')
+
 parser.add_argument('--arch', '-a', metavar='ARCH', default='resnet32',
                     choices=model_names,
                     help='model architecture: ' + ' | '.join(model_names) +
                     ' (default: resnet32)')
 parser.add_argument('--base-width', metavar='WIDTH', default=16, type=int,
                     help='width of the base layer')
+parser.add_argument('--half', dest='half', action='store_true',
+                    help='use half-precision (16-bit)')
+
 parser.add_argument('-j', '--workers', default=2, type=int, metavar='N',
                     help='number of data loading workers')
+parser.add_argument('-b', '--batch-size', default=128, type=int,
+                    metavar='N', help='mini-batch size')
+parser.add_argument('--use-color-jitter', '--cj', action='store_true',
+                    help='Use color jitter of 0.1 in train loader')
+
 parser.add_argument('--epochs', default=200, type=int, metavar='N',
                     help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
                     help='manual epoch number (useful on restarts)')
-parser.add_argument('-b', '--batch-size', default=128, type=int,
-                    metavar='N', help='mini-batch size')
+
 parser.add_argument('--lr', '--learning-rate', default=0.1, type=float,
                     metavar='LR', help='initial learning rate'
                     '\nNote that for ResNet-112/1202 it is 1e-2')
@@ -52,24 +63,22 @@ parser.add_argument('--momentum', default=0.9, type=float, metavar='M',
                     help='momentum')
 parser.add_argument('--weight-decay', '--wd', default=1e-4, type=float,
                     metavar='W', help='weight decay')
-parser.add_argument('--print-freq', '-p', default=2, type=int,
-                    metavar='N', help='print frequency (per epoch)')
-parser.add_argument('--resume', default='', type=str, metavar='PATH',
-                    help='path to latest checkpoint')
-parser.add_argument('--log-freq', '--lf', default=4, type=int, metavar='N',
-                    help="TensorBoard log frequency during training (per epoch)")
-parser.add_argument('-e', '--evaluate', dest='evaluate', action='store_true',
-                    help='evaluate model on validation set')
-parser.add_argument('--half', dest='half', action='store_true',
-                    help='use half-precision (16-bit)')
 parser.add_argument('--use-lr-warmup', action='store_true',
                     help="Use learning scheduler 2 to warmup the learning rate")
 parser.add_argument('--lr-warmup-num-epochs', type=int, default=2,
                     help='Number of epochs for the warmup, if set')
-parser.add_argument('--use-color-jitter', '--cj', action='store_true',
-                    help='Use color jitter of 0.1 in train loader')
-parser.add_argument('--use-test-set-as-valid', action='store_true',
-                    help='Use test set as validation set, and the full train set as train set, instead of the 5k/45k split')
+
+parser.add_argument('--resume', default='', type=str, metavar='PATH',
+                    help='path to latest checkpoint')
+
+parser.add_argument('-e', '--evaluate', dest='evaluate', action='store_true',
+                    help='evaluate model on validation set')
+
+parser.add_argument('--print-freq', '-p', default=2, type=int,
+                    metavar='N', help='print frequency (per epoch)')
+parser.add_argument('--log-freq', '--lf', default=4, type=int, metavar='N',
+                    help="TensorBoard log frequency during training (per epoch)")
+
 parser.add_argument('--comment', type=str, help='Commentary on the run')
 
 FOLDER_INCLUDED_ARGS = [('ds', 'dataset'), ('bs', 'batch_size'), ('lr', 'lr'), ('wd', 'weight_decay')]
@@ -108,6 +117,8 @@ def get_folder_name():
         arg_keys.remove(arg_key_name)
     for arg_key in arg_keys:
         arg_val = getattr(args, arg_key)
+        if not arg_val:
+            pass  # None
         if arg_key in FOLDER_IGNORED_ARGS:
             pass
         elif arg_key == 'comment':
@@ -171,10 +182,6 @@ def main():
     )
     model.cuda()
 
-    if args.half:
-        model.half()
-        criterion.half()
-
     if args.resume:
         if os.path.isfile(args.resume):
             print("Loading checkpoint '{}'".format(args.resume))
@@ -209,6 +216,10 @@ def main():
         args.print_freq = 1
     if args.log_freq < 1:
         args.log_freq = 1
+
+    if args.half:
+        model.half()
+        criterion.half()
 
     if args.evaluate:
         validate(val_loader, model, criterion, 42, writer)
@@ -269,29 +280,29 @@ def train_one_epoch(train_loader, model, criterion, optimizer, epoch, writer):
     log_period = (len(train_loader) // args.log_freq) + 1
 
     end = time.time()
-    for i, (inputs, target) in enumerate(train_loader):
+    for i, (inputs, targets) in enumerate(train_loader):
 
         # measure data loading time
         data_time.update(time.time() - end)
 
         input_var = inputs.cuda()
-        target = target.cuda()
+        targets = targets.cuda()
         if args.half:
             input_var = input_var.half()
 
         # compute output
-        output = model(input_var)
-        loss = criterion(output, target)
+        outputs = model(input_var)
+        loss = criterion(outputs, targets)
 
         # compute gradient and do SGD step
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
-        output = output.float()
+        outputs = outputs.float()
         loss = loss.float()
         # measure accuracy and record loss
-        prec1 = accuracy(output.data, target)[0]
+        prec1 = accuracy(outputs.data, targets)[0]
         losses.update(loss.item(), inputs.size(0))
         top1.update(prec1.item(), inputs.size(0))
 
