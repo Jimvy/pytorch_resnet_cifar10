@@ -56,6 +56,19 @@ parser.add_argument('--epochs', default=200, type=int, metavar='N',
 parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
                     help='manual epoch number (useful on restarts)')
 
+parser.add_argument('--distill', action='store_true',
+                    help='Specify distillation parameters')
+parser.add_argument('--distill-weight', type=float,
+                    help='Distillation weight')
+parser.add_argument('--distill-temp', type=float,
+                    help='Distillation temperature')
+parser.add_argument('--teacher-arch', type=str,
+                    help='Teacher architecture')
+parser.add_argument('--teacher-base-width', type=int,
+                    help='Teacher architecture base width')
+parser.add_argument('--teacher-path', type=str, metavar='PATH',
+                    help='Teacher model checkpoint path')
+
 parser.add_argument('--lr', '--learning-rate', default=0.1, type=float,
                     metavar='LR', help='initial learning rate'
                     '\nNote that for ResNet-112/1202 it is 1e-2')
@@ -82,7 +95,7 @@ parser.add_argument('--log-freq', '--lf', default=4, type=int, metavar='N',
 parser.add_argument('--comment', type=str, help='Commentary on the run')
 
 FOLDER_INCLUDED_ARGS = [('ds', 'dataset'), ('bs', 'batch_size'), ('lr', 'lr'), ('wd', 'weight_decay')]
-FOLDER_IGNORED_ARGS = ['arch', 'workers', 'resume', 'log_freq', 'print_freq', 'momentum', 'start_epoch', 'epochs']
+FOLDER_IGNORED_ARGS = ['arch', 'workers', 'resume', 'log_freq', 'print_freq', 'momentum', 'start_epoch', 'epochs', 'teacher_path']
 
 best_prec1 = 0
 
@@ -133,6 +146,35 @@ def get_folder_name():
     if args.comment:
         attrs.append(args.comment)
     return '_'.join(attrs)
+
+
+class Criterion(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.criterions_ot = []
+        self.criterions_iot = []
+
+    def add_criterion(self, crit, criterion_type='output_target', weight=1):
+        if criterion_type=='output_target':
+            self.criterions_ot.append((crit, weight))
+        elif criterion_type=='input_output_target':
+            self.criterions_iot.append((crit, weight))
+        else:
+            raise ValueError("Doesn't support another criterion type")
+
+    def forward(self, inputs, outputs, targets):
+        ret = None
+        if self.criterions_ot:
+            ret = self.criterions_ot[0][0](outputs, targets) * self.criterions_ot[0][1]
+        else:
+            ret = self.criterions_iot[0][0](inputs, outputs, targets) * self.criterions_iot[0][1]
+
+        for crit, w in self.criterions_iot:
+            ret += w * crit(inputs, outputs, targets)
+        for crit, w in self.criterions_ot:
+            ret += w * crit(outputs, targets)
+
+        return ret
 
 
 def main():
@@ -192,8 +234,33 @@ def main():
         else:
             print(f"No checkpoint found at '{args.resume}'")
 
+    teacher = None
+    if args.distill:
+        teacher = resnet.__dict__[args.teacher_arch](
+            num_classes=dataset.get_num_classes(),
+            base_width=args.teacher_base_width
+        ).cuda()
+        if not os.path.isfile(args.teacher_path):
+            print(f"No checkpoint found at '{args.teacher_path}'; aborting")
+            return
+        chkpt = torch.load(args.teacher_path)
+        teacher.load_state_dict(chkpt['state_dict'])
+        print("Loaded teacher")
+
     # define loss function (criterion) and optimizer
-    criterion = nn.CrossEntropyLoss().cuda()
+    criterion = Criterion()
+    criterion.add_criterion(nn.CrossEntropyLoss().cuda())
+    if args.distill:
+        softmaxfunc, logsoftmaxfunc, kldivfunc = nn.Softmax(dim=1).cuda(), nn.LogSoftmax(dim=1).cuda(), nn.KLDivLoss(reduction='batchmean').cuda()
+        def crit(inputs, outputs, targets):
+            outputs_teacher = teacher(inputs).detach()
+            ret = (args.distill_temp ** 2) * kldivfunc(
+                logsoftmaxfunc(outputs / args.distill_temp),
+                softmaxfunc(outputs_teacher / args.distill_temp)
+            )
+            return ret
+
+        criterion.add_criterion(crit, criterion_type='input_output_target', weight=args.distill_weight)
 
     optimizer = torch.optim.SGD(model.parameters(), args.lr,
                                 momentum=args.momentum,
@@ -292,7 +359,7 @@ def train_one_epoch(train_loader, model, criterion, optimizer, epoch, writer):
 
         # compute output
         outputs = model(input_var)
-        loss = criterion(outputs, targets)
+        loss = criterion(input_var, outputs, targets)
 
         # compute gradient and do SGD step
         optimizer.zero_grad()
@@ -355,7 +422,7 @@ def validate(val_loader, model, criterion, epoch, writer):
 
             # compute output
             outputs = model(inputs)
-            loss = criterion(outputs, targets)
+            loss = criterion(inputs, outputs, targets)
 
             outputs = outputs.float()
             loss = loss.float()
