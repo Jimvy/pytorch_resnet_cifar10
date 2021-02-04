@@ -153,28 +153,41 @@ class Criterion(nn.Module):
         super().__init__()
         self.criterions_ot = []
         self.criterions_iot = []
+        self.criterion_names = []
+        self.prev_ret_map = {}
 
-    def add_criterion(self, crit, criterion_type='output_target', weight=1):
+    def add_criterion(self, crit, name: str, criterion_type='output_target', weight=1):
+        if name in self.criterion_names:
+            print("Warning, criterion with the same name {}".format(name))
+            id = 1
+            new_name = "{}{}".format(name, id)
+            while new_name in self.criterion_names:
+                new_name = "{}{}".format(name, id)
+                id += 1
+            name = new_name
+        self.criterion_names.append(name)
         if criterion_type=='output_target':
-            self.criterions_ot.append((crit, weight))
+            self.criterions_ot.append((name, crit, weight))
         elif criterion_type=='input_output_target':
-            self.criterions_iot.append((crit, weight))
+            self.criterions_iot.append((name, crit, weight))
         else:
             raise ValueError("Doesn't support another criterion type")
 
     def forward(self, inputs, outputs, targets):
-        ret = None
-        if self.criterions_ot:
-            ret = self.criterions_ot[0][0](outputs, targets) * self.criterions_ot[0][1]
-        else:
-            ret = self.criterions_iot[0][0](inputs, outputs, targets) * self.criterions_iot[0][1]
-
-        for crit, w in self.criterions_iot:
-            ret += w * crit(inputs, outputs, targets)
-        for crit, w in self.criterions_ot:
-            ret += w * crit(outputs, targets)
-
+        self.prev_ret_map = self.get_criterions(inputs, outputs, targets)
+        ret = 0
+        for name, val in self.prev_ret_map.items():
+            ret += val
         return ret
+
+    def get_criterions(self, inputs, outputs, targets):
+        ret = {}
+        for name, crit, w in self.criterions_iot:
+            ret[name] = w * crit(inputs, outputs, targets)
+        for name, crit, w in self.criterions_ot:
+            ret[name] = w * crit(outputs, targets)
+        return ret
+
 
 
 def main():
@@ -249,7 +262,7 @@ def main():
 
     # define loss function (criterion) and optimizer
     criterion = Criterion()
-    criterion.add_criterion(nn.CrossEntropyLoss().cuda())
+    criterion.add_criterion(nn.CrossEntropyLoss().cuda(), "CE")
     if args.distill:
         softmaxfunc, logsoftmaxfunc, kldivfunc = nn.Softmax(dim=1).cuda(), nn.LogSoftmax(dim=1).cuda(), nn.KLDivLoss(reduction='batchmean').cuda()
         def crit(inputs, outputs, targets):
@@ -260,7 +273,7 @@ def main():
             )
             return ret
 
-        criterion.add_criterion(crit, criterion_type='input_output_target', weight=args.distill_weight)
+        criterion.add_criterion(crit, "HKD", criterion_type='input_output_target', weight=args.distill_weight)
 
     optimizer = torch.optim.SGD(model.parameters(), args.lr,
                                 momentum=args.momentum,
@@ -338,6 +351,9 @@ def train_one_epoch(train_loader, model, criterion, optimizer, epoch, writer):
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
+    losses_components = {}
+    for loss_name in criterion.criterion_names:
+        losses_components[loss_name] = AverageMeter()
     top1 = AverageMeter()
 
     # switch to train mode
@@ -360,6 +376,7 @@ def train_one_epoch(train_loader, model, criterion, optimizer, epoch, writer):
         # compute output
         outputs = model(input_var)
         loss = criterion(input_var, outputs, targets)
+        loss_map = criterion.prev_ret_map
 
         # compute gradient and do SGD step
         optimizer.zero_grad()
@@ -371,6 +388,8 @@ def train_one_epoch(train_loader, model, criterion, optimizer, epoch, writer):
         # measure accuracy and record loss
         prec1 = accuracy(outputs.data, targets)[0]
         losses.update(loss.item(), inputs.size(0))
+        for loss_name, loss_val in loss_map.items():
+            losses_components[loss_name].update(loss_val)
         top1.update(prec1.item(), inputs.size(0))
 
         # measure elapsed time
@@ -388,6 +407,8 @@ def train_one_epoch(train_loader, model, criterion, optimizer, epoch, writer):
         if i % log_period == log_period-1:
             writer.add_scalar("Prec1/train", top1.avg, epoch + i/len(train_loader))
             writer.add_scalar("Loss/train", losses.avg, epoch + i/len(train_loader))
+            for loss_name, loss_meter in losses_components.items():
+                writer.add_scalar("Loss/train/{}".format(loss_name), loss_meter.avg, epoch + i/len(train_loader))
 
     print('Epoch: [{0}][done]\t'
           'Time {batch_time.val:.3f}\t'
@@ -398,6 +419,8 @@ def train_one_epoch(train_loader, model, criterion, optimizer, epoch, writer):
               data_time=data_time, loss=losses, top1=top1))
     writer.add_scalar("Prec1/train", top1.avg, epoch+1)
     writer.add_scalar("Loss/train", losses.avg, epoch+1)
+    for loss_name, loss_meter in losses_components.items():
+        writer.add_scalar("Loss/train/{}".format(loss_name), loss_meter.avg, epoch+1)
 
 
 def validate(val_loader, model, criterion, epoch, writer):
@@ -406,6 +429,9 @@ def validate(val_loader, model, criterion, epoch, writer):
     """
     batch_time = AverageMeter()
     losses = AverageMeter()
+    losses_components = {}
+    for loss_name in criterion.criterion_names:
+        losses_components[loss_name] = AverageMeter()
     top1 = AverageMeter()
 
     # switch to evaluate mode
@@ -423,6 +449,7 @@ def validate(val_loader, model, criterion, epoch, writer):
             # compute output
             outputs = model(inputs)
             loss = criterion(inputs, outputs, targets)
+            loss_map = criterion.prev_ret_map
 
             outputs = outputs.float()
             loss = loss.float()
@@ -430,6 +457,8 @@ def validate(val_loader, model, criterion, epoch, writer):
             # measure accuracy and record loss
             prec1 = accuracy(outputs.data, targets)[0]
             losses.update(loss.item(), inputs.size(0))
+            for loss_name, loss_val in loss_map.items():
+                losses_components[loss_name].update(loss_val)
             top1.update(prec1.item(), inputs.size(0))
 
             # measure elapsed time
@@ -438,6 +467,8 @@ def validate(val_loader, model, criterion, epoch, writer):
 
         writer.add_scalar("Prec1/valid", top1.avg, epoch)
         writer.add_scalar("Loss/valid", losses.avg, epoch)
+        for loss_name, loss_meter in losses_components.items():
+            writer.add_scalar("Loss/valid/{}".format(loss_name), loss_meter.avg, epoch)
 
     print(f"Valid: Prec1 {top1.avg:.3f} \t (Time: {batch_time.avg:.3f}, Loss: {losses.avg:.4f})")
 
