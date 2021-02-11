@@ -15,15 +15,18 @@ from torch.optim import lr_scheduler as topt_lr_scheduler
 from torch.optim.lr_scheduler import _LRScheduler as LRScheduler
 from torch.utils.tensorboard import SummaryWriter
 
-import resnet
+import models
 import cifar
 from utils.statistics_meter import AverageMeter
 
 
-model_names = sorted(name for name in resnet.__dict__
-                     if name.islower() and not name.startswith("__")
-                     and name.startswith("resnet")
-                     and callable(resnet.__dict__[name]))
+model_names = sorted(
+    name for name in models.__dict__
+    if name.islower() and not name.startswith("__")
+    and (name.startswith("resnet") or name.startswith("vgg"))
+    and callable(models.__dict__[name])
+)
+
 
 parser = argparse.ArgumentParser(
     description='Proper ResNets for CIFAR10 in pytorch',
@@ -166,9 +169,9 @@ class Criterion(nn.Module):
                 id += 1
             name = new_name
         self.criterion_names.append(name)
-        if criterion_type=='output_target':
+        if criterion_type == 'output_target':
             self.criterions_ot.append((name, crit, weight))
-        elif criterion_type=='input_output_target':
+        elif criterion_type == 'input_output_target':
             self.criterions_iot.append((name, crit, weight))
         else:
             raise ValueError("Doesn't support another criterion type")
@@ -187,7 +190,6 @@ class Criterion(nn.Module):
         for name, crit, w in self.criterions_ot:
             ret[name] = w * crit(outputs, targets)
         return ret
-
 
 
 def main():
@@ -231,7 +233,7 @@ def main():
             use_color_jitter=args.use_color_jitter
         )  # By default the split is at 90%/10%, so 45k/5k
 
-    model = resnet.__dict__[args.arch](
+    model = models.__dict__[args.arch](
         num_classes=dataset.get_num_classes(),
         base_width=args.base_width
     )
@@ -249,7 +251,7 @@ def main():
 
     teacher = None
     if args.distill:
-        teacher = resnet.__dict__[args.teacher_arch](
+        teacher = models.__dict__[args.teacher_arch](
             num_classes=dataset.get_num_classes(),
             base_width=args.teacher_base_width
         ).cuda()
@@ -279,8 +281,11 @@ def main():
                                 momentum=args.momentum,
                                 weight_decay=args.weight_decay)
 
-    lr_scheduler1 = topt_lr_scheduler.MultiStepLR(optimizer,
-                                                  milestones=[100, 150], last_epoch=args.start_epoch - 1)
+    lr_scheduler1 = topt_lr_scheduler.MultiStepLR(
+        optimizer,
+        milestones=[60, 120, 160],
+        gamma=0.2,
+        last_epoch=args.start_epoch - 1)
     main_lr_scheduler = LRSchedulerSequence(lr_scheduler1)
     if args.use_lr_warmup:
         for param_group in optimizer.param_groups:
