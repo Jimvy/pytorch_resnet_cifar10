@@ -266,13 +266,14 @@ def main():
     criterion = Criterion()
     criterion.add_criterion(nn.CrossEntropyLoss().cuda(), "CE")
     if args.distill:
-        softmaxfunc, logsoftmaxfunc, kldivfunc = nn.Softmax(dim=1).cuda(), nn.LogSoftmax(dim=1).cuda(), nn.KLDivLoss(reduction='batchmean').cuda()
+        # softmaxfunc, logsoftmaxfunc, kldivfunc = nn.Softmax(dim=1).cuda(), nn.LogSoftmax(dim=1).cuda(), nn.KLDivLoss(reduction='batchmean').cuda()
         def crit(inputs, outputs, targets):
             outputs_teacher = teacher(inputs).detach()
-            ret = (args.distill_temp ** 2) * kldivfunc(
-                logsoftmaxfunc(outputs / args.distill_temp),
-                softmaxfunc(outputs_teacher / args.distill_temp)
-            )
+            # ret = (args.distill_temp ** 2) * kldivfunc(
+            #     logsoftmaxfunc(outputs / args.distill_temp),
+            #     softmaxfunc(outputs_teacher / args.distill_temp)
+            # )
+            ret = (args.distill_temp ** 2) * ((-1) * F.log_softmax(outputs / args.distill_temp, dim=1) * F.softmax(outputs_teacher / args.distill_temp, dim=1)).sum(dim=1).mean()
             return ret
 
         criterion.add_criterion(crit, "HKD", criterion_type='input_output_target', weight=args.distill_weight)
